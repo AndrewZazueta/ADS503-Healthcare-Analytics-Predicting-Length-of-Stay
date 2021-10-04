@@ -1,0 +1,200 @@
+---
+title: "Appendix A"
+author:
+- Hanmaro Song
+- Tyler Wolff
+- Andrew Zazueta
+date: "6/28/2021"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Obtaining Data and Setting up Libraries
+
+```{r, message = FALSE, warning = FALSE}
+setwd("C:/Users/mzazu/OneDrive/Documents/USD papers/503/503_Project")
+library("tidyverse")
+library("caret")
+library("e1071")
+library("mda")
+library("earth")
+library("nnet")
+library("pROC")
+library("rpart")
+library("C50")
+healthcare <- read_csv("train_data.csv")
+```
+
+## Cleaning and Preporation Phase
+
+### Part 1: Exploratory Data Analysis and Handling Missing Values
+
+```{r}
+# Finding missing values
+dim(healthcare[!complete.cases(healthcare),])
+
+# All of the rows with missing values are from the variables "Bed Grade" and "City Code Patient".
+# 0.04% of the bed grades are missing and 1.4% of the city Code Patients are missing from the 
+# data set.
+sum(is.na(healthcare$`Bed Grade`))
+sum(is.na(healthcare$`Bed Grade`)) / dim(healthcare)[1]
+sum(is.na(healthcare$City_Code_Patient)) 
+sum(is.na(healthcare$City_Code_Patient)) / dim(healthcare)[1]
+
+# The average bed grade is 2.6, so missing bed grades will be replaced with 3. 
+val <- ceiling(mean(healthcare$`Bed Grade`, na.rm=TRUE))
+for(i in 1:nrow(healthcare)){
+  if(is.na(healthcare[i, "Bed Grade"])==TRUE){
+    healthcare[i, "Bed Grade"] <- val
+  }
+}
+
+# Examining the city code patient values, the codes are all grouped together in a series. For 
+# example, the first 14 rows are 7's and the following 11 rows are 8's, and next the following 
+# rows are 2's. The NA's follow a similar pattern, where there will be a series of them 
+# sandwiched between another series of numbers. It is unclear to whether the missing NA's are 
+# numbers that they are between or they are a completely different number than the numbers they 
+# are between. The best guess is that it is the later, so all NA's will be replaced with a dummy 
+# value of 0 as its own unique city code for patients. 
+
+for(i in 1:nrow(healthcare)){
+  if(is.na(healthcare[i, "City_Code_Patient"])==TRUE){
+    healthcare[i, "City_Code_Patient"] <- 0
+  }
+}
+
+# There are no more missing values
+dim(healthcare[!complete.cases(healthcare),])
+
+# Checking most prevalent response class. "21-30 days" is the most common class in the response 
+# variable "Stay" at 27.5%, so our models must have an accuracy better than this so we can be 
+# better than an "all positive" baseline model. Also, there is some class imbalance within the  
+# set, so that will have an effect on our model building effectiveness. 
+healthcare %>% ggplot(aes(Stay)) +
+  geom_histogram(stat= "count")
+
+length(which(healthcare$Stay == "21-30"))/length(healthcare$Stay)
+
+# Checking for near zero variance columns; returned none
+nearZeroVar(healthcare)
+
+# Removing features that will not be helpful to our modeling. Since case id and patient id are 
+# specific to a person, it will not help in our modeling
+hc_removed <- healthcare %>% 
+  select(-c(case_id, patientid))
+
+# There is a strong relationship between hospital code, hospital type code, and city code 
+# hospital, so only one of these columns is needed. For example, when the hospital type code is
+# 'c', the city code hospital value is either 3 or 5. When the hospital type code is 'd', the 
+# city code hospital values are 5, 10, or 13. The same occurrences happened between hospital code
+# and hospital type code, so we will keep "Hospital Code."
+hc_removed <- hc_removed %>% 
+  select(-c(City_Code_Hospital, Hospital_type_code))
+```
+
+### Part 2: Data Splitting
+
+```{r}
+# Moving the response variable out of data frame
+stay <- hc_removed$Stay
+hc_no_stay <- hc_removed %>% 
+  select(-Stay)
+
+# Splitting the data into training and test set
+set.seed(1)
+split <- createDataPartition(stay, p = .80, times = 1, list = FALSE)
+trainPredictors <- hc_no_stay[split, ]
+testPredictors <- hc_no_stay[-split,]
+trainClasses <- stay[split]
+testClasses <- stay[-split]
+
+# Having data sets with predictors and response combined 
+
+trainCombo <- tibble(trainPredictors, trainClasses)
+testCombo <- tibble(testPredictors, testClasses)
+
+# Data sets with only numeric predictors
+
+trainNum <- trainCombo %>% 
+  select(Hospital_code, `Available Extra Rooms in Hospital`, `Bed Grade`, City_Code_Patient,
+         `Visitors with Patient`, Admission_Deposit)
+
+testNum <- testCombo %>% 
+  select(Hospital_code, `Available Extra Rooms in Hospital`, `Bed Grade`, City_Code_Patient,
+         `Visitors with Patient`, Admission_Deposit)
+
+# Data set that is reduced for computational purposes. This data set will be used 
+# for KNN, so we will also only have numeric predictors. The data frame was reduced to 
+# 20% of what it used to be. Once this was completed, we split the training the test data 80:20. 
+
+split2 <- createDataPartition(stay, p = .2, times = 1, list = FALSE)
+numReducedPred <- hc_no_stay[split2, ]
+numReducedClass <- stay[split2]
+split3 <- createDataPartition(numReducedClass, p = .80, times = 1, list = FALSE)
+
+trainReducedPredictors <- numReducedPred[split3, ]
+testReducedPredictors <- numReducedPred[-split3,]
+trainReducedClasses <- numReducedClass[split3]
+testReducedClasses <- numReducedClass[-split3]
+
+trainReducedNum <- trainReducedPredictors %>% 
+  select(Hospital_code, `Available Extra Rooms in Hospital`, `Bed Grade`, City_Code_Patient,
+         `Visitors with Patient`, Admission_Deposit)
+
+testReducedNum <- testReducedPredictors %>% 
+  select(Hospital_code, `Available Extra Rooms in Hospital`, `Bed Grade`, City_Code_Patient,
+         `Visitors with Patient`, Admission_Deposit)
+```
+
+## Model Building Phase
+
+```{r, warning=FALSE}
+# Naive Bayes
+nb <- naiveBayes(x = trainPredictors, y = trainClasses)
+confusionMatrix(predict(nb, testPredictors), as.factor(testClasses))
+
+# FDA
+fda <- fda(trainClasses ~ .,
+                   data = trainCombo, 
+                   method = earth)
+confusionMatrix(predict(fda, testCombo), as.factor(testCombo$testClasses))
+
+# MDA
+mda <- mda(trainClasses ~ .,
+           data = trainNum)
+confusionMatrix(predict(mda, testNum), as.factor(testCombo$testClasses))
+
+# KNN
+ctrl <- trainControl(method = "cv", number = 10)
+knnFit <- train(trainReducedNum, trainReducedClasses,
+                method = "knn",
+                preProc = c("center", "scale"),
+                trControl = ctrl)
+confusionMatrix(predict(knnFit, testReducedNum), as.factor(testReducedClasses))
+
+#CART
+cart <- rpart(trainClasses ~ ., method = "class", data = trainNum)
+confusionMatrix(predict(cart, testNum, "class"), as.factor(testClasses))
+
+# C50
+C50 <- C5.0(x = trainPredictors, y = as.factor(trainClasses))
+p <- predict(C50, testPredictors, type = "class")
+confusionMatrix(p, as.factor(testClasses))
+```
+
+## Model Evaluation Phase
+
+```{r, message=FALSE}
+# Top predictors for FDA model
+imp <- varImp(fda)
+imp
+
+# Accuracy for KNN
+plot(knnFit)
+```
+
